@@ -1,0 +1,26 @@
+[project]
+name = "ds-tools"
+version = "0.1.0"
+description = "Datasets operations library and CLI tools."
+readme = "README.md"
+authors = [
+    { name = "James U", email = "tenseventyseven@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.11.5",
+    "typer",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+ds-tools = "ds_tools.cli:app"
