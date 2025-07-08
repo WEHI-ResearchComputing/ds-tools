@@ -1,24 +1,54 @@
-"""Command-line interface for ds-tools."""
+"""Command-line interface for ds-tools.
+
+This module provides a unified CLI for storage operations across different backends.
+The CLI automatically detects storage type based on path format and routes operations
+to the appropriate backend implementation.
+
+Storage Type Detection:
+    - Local paths: /path/to/directory
+    - SSH paths: ssh://user@host/path or user@host:/path
+    - S3 paths: s3://bucket/prefix
+
+Commands:
+    - analyze: Calculate storage metrics (file count, total size)
+    - list: List storage contents (subdirectories/prefixes or files/objects)
+    - verify-access: Verify storage access permissions
+
+All commands support the same parameter interface but only use relevant parameters
+for each storage type (e.g., SSH parameters are ignored for S3 operations).
+"""
 
 from typing import Annotated, Optional
 
 import typer
 
 from . import __version__
-from .permission_verifier import (
-    PermissionVerifierFactory,
-    FilesystemType,
+from .cli_params import (
+    aws_access_key_option,
+    aws_endpoint_url_option,
+    aws_profile_option,
+    aws_region_option,
+    aws_secret_key_option,
+    aws_session_token_option,
+    content_type_option,
+    fs_username_option,
+    max_items_option,
+    operation_option,
+    ssh_hostname_option,
+    ssh_key_option,
+    ssh_username_option,
+    ssh_username_verify_option,
+    timeout_option,
 )
-from .path import (
-    path_stats,
-    LocalPathStats,
-    RemotePathStats,
-    list_subfolders,
+from .unified import (
+    analyze_storage,
+    list_storage_contents,
+    verify_storage_access,
 )
 
 app = typer.Typer(
     name="ds-tools",
-    help="CLI for datasets tools",
+    help="CLI for unified storage operations (local, SSH, S3)",
     add_completion=False,
 )
 
@@ -47,141 +77,166 @@ def main(
     pass
 
 
-@app.command()
-def verify_permissions(
-    path: Annotated[str, typer.Argument(help="Path to verify permissions for")],
-    user: Annotated[str, typer.Argument(help="User to check permissions for")],
-    filesystem_type: Annotated[
-        FilesystemType,
-        typer.Option(
-            "--filesystem-type",
-            "-f",
-            help="Filesystem type: nfs, nfs4, or s3",
-            case_sensitive=False,
+@app.command("analyze")
+def analyze_cmd(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="Storage path (local, ssh://user@host/path, or s3://bucket/prefix)"
         ),
-    ] = FilesystemType.nfs,
-    access_key_id: Annotated[
-        Optional[str],
-        typer.Option(help="S3 access key ID (for s3 only)"),
-    ] = None,
-    secret_access_key: Annotated[
-        Optional[str],
-        typer.Option(help="S3 secret access key (for s3 only)"),
-    ] = None,
-    endpoint_url: Annotated[
-        Optional[str],
-        typer.Option(help="S3 endpoint URL (for s3 only)"),
-    ] = None,
-    region_name: Annotated[
-        Optional[str],
-        typer.Option(help="S3 region name (for s3 only)"),
-    ] = None,
-    session_token: Annotated[
-        Optional[str],
-        typer.Option(help="S3 session token (for s3 only)"),
-    ] = None,
+    ],
+    # SSH options
+    hostname: ssh_hostname_option() = None,
+    username: ssh_username_option() = None,
+    ssh_key: ssh_key_option() = None,
+    # S3 options
+    access_key_id: aws_access_key_option() = None,
+    secret_access_key: aws_secret_key_option() = None,
+    session_token: aws_session_token_option() = None,
+    region_name: aws_region_option() = "us-east-1",
+    endpoint_url: aws_endpoint_url_option() = None,
+    aws_profile: aws_profile_option() = None,
+    # Common options
+    timeout: timeout_option() = 300,
 ) -> None:
     """
-    Verify that a user has read and execute permissions on a given path.
+    Analyze storage to get item count and total size.
 
-    For S3, provide credentials via options.
+    Supports local paths, SSH (ssh://user@host/path), and S3 (s3://bucket/prefix).
+    Storage type is auto-detected from path format.
     """
     try:
-        config = {}
-        if filesystem_type.lower() == "s3":
-            if not (access_key_id and secret_access_key):
-                typer.echo(
-                    "S3 requires --access-key-id and --secret-access-key", err=True
-                )
-                raise typer.Exit(1)
-            config = {
-                "access_key_id": access_key_id,
-                "secret_access_key": secret_access_key,
-                "endpoint_url": endpoint_url,
-                "region_name": region_name or "us-east-1",
-                "session_token": session_token,
-            }
-        verifier = PermissionVerifierFactory.create_verifier(filesystem_type, **config)
-        if verifier.verify_permissions(path, user):
-            typer.echo("✓ User has read and execute permissions")
+        metrics = analyze_storage(
+            path=path,
+            hostname=hostname,
+            username=username,
+            ssh_key=ssh_key,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            session_token=session_token,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_profile=aws_profile,
+            timeout=timeout,
+        )
 
-    except NotImplementedError as e:
-        typer.echo(f"Not implemented: {e}", err=True)
-        raise typer.Exit(2)
+        typer.echo(f"Storage: {metrics.location}")
+        typer.echo(f"Type: {metrics.storage_type}")
+        typer.echo(f"Items: {metrics.item_count:,}")
+        typer.echo(f"Total size: {metrics.total_bytes:,} bytes")
 
-    except (PermissionError, NotADirectoryError, ValueError) as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-
-@app.command()
-def local_path_stats(
-    path: Annotated[str, typer.Argument(help="Local path to analyze")],
-    timeout: Annotated[
-        int,
-        typer.Option(help="Command timeout in seconds"),
-    ] = 300,
-) -> None:
-    """
-    Count files and sum bytes in a local directory.
-
-    Uses `find` and `awk`.
-    """
-    try:
-        executor = LocalPathStats()
-        file_count, byte_count = path_stats(executor, path, timeout)
-        typer.echo(f"File count: {file_count}, Byte count: {byte_count}")
+        # Human-readable size
+        if metrics.total_bytes >= 1024**3:
+            size_str = f"{metrics.total_bytes / (1024**3):.2f} GB"
+        elif metrics.total_bytes >= 1024**2:
+            size_str = f"{metrics.total_bytes / (1024**2):.2f} MB"
+        elif metrics.total_bytes >= 1024:
+            size_str = f"{metrics.total_bytes / 1024:.2f} KB"
+        else:
+            size_str = f"{metrics.total_bytes} bytes"
+        typer.echo(f"Human readable: {size_str}")
 
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
-@app.command()
-def remote_path_stats(
-    path: Annotated[str, typer.Argument(help="Remote path to analyze")],
-    hostname: Annotated[str, typer.Option(help="Remote hostname")],
-    username: Annotated[str, typer.Option(help="SSH username")],
-    ssh_key: Annotated[str, typer.Option(help="Path to SSH private key")],
-    timeout: Annotated[
-        int,
-        typer.Option(help="Command timeout in seconds"),
-    ] = 300,
+@app.command("list")
+def list_cmd(
+    path: Annotated[str, typer.Argument(help="Storage path to list")],
+    content_type: content_type_option() = "subdirectories",
+    # SSH options
+    hostname: ssh_hostname_option() = None,
+    username: ssh_username_option() = None,
+    ssh_key: ssh_key_option() = None,
+    # S3 options
+    access_key_id: aws_access_key_option() = None,
+    secret_access_key: aws_secret_key_option() = None,
+    session_token: aws_session_token_option() = None,
+    region_name: aws_region_option() = "us-east-1",
+    endpoint_url: aws_endpoint_url_option() = None,
+    aws_profile: aws_profile_option() = None,
+    # Common options
+    timeout: timeout_option() = 300,
+    max_items: max_items_option() = 1000,
 ) -> None:
     """
-    Count files and sum bytes in a remote directory via SSH.
+    List storage contents (subdirectories/prefixes or files/objects).
 
-    Uses `find` and `awk`.
+    Supports local paths, SSH (ssh://user@host/path), and S3 (s3://bucket/prefix).
     """
     try:
-        executor = RemotePathStats(hostname, username, ssh_key)
-        file_count, byte_count = path_stats(executor, path, timeout)
-        typer.echo(f"File count: {file_count}, Byte count: {byte_count}")
+        items = list_storage_contents(
+            path=path,
+            content_type=content_type,
+            hostname=hostname,
+            username=username,
+            ssh_key=ssh_key,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            session_token=session_token,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_profile=aws_profile,
+            timeout=timeout,
+            max_items=max_items,
+        )
+
+        if items:
+            typer.echo(f"Found {len(items)} {content_type}:")
+            for item in items:
+                typer.echo(f"  {item}")
+        else:
+            typer.echo(f"No {content_type} found.")
 
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
-@app.command()
-def list_remote_subfolders(
-    path: Annotated[str, typer.Argument(help="Remote path to analyze")],
-    hostname: Annotated[str, typer.Option(help="Remote hostname")],
-    username: Annotated[str, typer.Option(help="SSH username")],
-    ssh_key: Annotated[str, typer.Option(help="Path to SSH private key")],
-    timeout: Annotated[
-        int,
-        typer.Option(help="Command timeout in seconds"),
-    ] = 300,
+@app.command("verify-access")
+def verify_access_cmd(
+    path: Annotated[str, typer.Argument(help="Storage path to verify access for")],
+    operation: operation_option() = "read",
+    username: fs_username_option() = None,
+    # SSH options
+    hostname: ssh_hostname_option() = None,
+    ssh_username: ssh_username_verify_option() = None,
+    ssh_key: ssh_key_option() = None,
+    # S3 options
+    access_key_id: aws_access_key_option() = None,
+    secret_access_key: aws_secret_key_option() = None,
+    session_token: aws_session_token_option() = None,
+    region_name: aws_region_option() = "us-east-1",
+    endpoint_url: aws_endpoint_url_option() = None,
+    aws_profile: aws_profile_option() = None,
 ) -> None:
     """
-    List subfolders in a remote directory via SSH.
+    Verify access to storage location.
 
-    Uses `find`.
+    Supports local paths, SSH (ssh://user@host/path), and S3 (s3://bucket/prefix).
     """
     try:
-        subfolders = list_subfolders(path, hostname, username, ssh_key, timeout)
-        typer.echo(f"Subfolders: {subfolders}")
+        has_access = verify_storage_access(
+            path=path,
+            username=username,
+            operation=operation,
+            hostname=hostname,
+            ssh_username=ssh_username,
+            ssh_key=ssh_key,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            session_token=session_token,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_profile=aws_profile,
+        )
+
+        if has_access:
+            typer.echo(f"✓ {operation.title()} access verified for: {path}")
+        else:
+            typer.echo(f"✗ {operation.title()} access denied for: {path}")
+            raise typer.Exit(1)
 
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
