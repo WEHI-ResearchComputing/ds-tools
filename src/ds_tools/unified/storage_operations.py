@@ -38,21 +38,19 @@ from urllib.parse import urlparse
 
 from ds_tools.core import get_logger
 from ds_tools.core.exceptions import ValidationError
-from ds_tools.storage_config import StorageConfig
 from ds_tools.filesystem import (
-    LocalDirectoryAnalyzer,
-    LocalSubdirectoryLister,
-    RemoteDirectoryAnalyzer,
-    RemoteSubdirectoryLister,
-    calculate_directory_metrics,
-    list_subdirectories,
+    analyze_local_directory,
+    analyze_remote_directory,
+    list_local_subdirectories,
+    list_remote_subdirectories,
 )
 from ds_tools.filesystem.permissions import FilesystemType, verify_directory_access
-from ds_tools.objectstorage import (
+from ds_tools.objectstorage.s3_operations import (
     analyze_prefix,
     list_objects_by_prefix,
     verify_s3_access,
 )
+from ds_tools.storage_config import SSHConfig, StorageConfig
 
 logger = get_logger(__name__)
 
@@ -164,6 +162,33 @@ def _parse_ssh_path(
     return hostname, username, actual_path
 
 
+def _determine_storage_type_and_config(
+    path: str, config: Optional[StorageConfig] = None
+) -> tuple[str, StorageConfig]:
+    """Determine storage type and ensure proper config.
+
+    Args:
+        path: Storage path
+        config: Optional StorageConfig
+
+    Returns:
+        Tuple of (storage_type, config)
+    """
+    # Use default config if none provided
+    if config is None:
+        config = StorageConfig()
+
+    # Determine storage type based on config and path format
+    if config.ssh is not None:
+        storage_type = "ssh"
+    elif config.s3 is not None:
+        storage_type = "s3"
+    else:
+        storage_type = _detect_storage_type(path)
+
+    return storage_type, config
+
+
 def analyze_storage(
     path: str,
     config: Optional[StorageConfig] = None,
@@ -186,23 +211,17 @@ def analyze_storage(
         ValidationError: If storage type cannot be determined or required parameters
             are missing
     """
-    # Use default config if none provided
-    if config is None:
-        config = StorageConfig()
-    
-    # Determine storage type based on config and path format
-    if config.ssh is not None:
-        storage_type = "ssh"
-    elif config.s3 is not None:
-        storage_type = "s3"
-    else:
-        storage_type = _detect_storage_type(path)
-
+    storage_type, config = _determine_storage_type_and_config(path, config)
     logger.info("Analyzing storage", path=path, storage_type=storage_type)
 
     try:
         if storage_type == "s3":
             s3_config = config.s3
+            if s3_config is None:
+                raise ValidationError(
+                    "S3 configuration is required for S3 storage type"
+                )
+
             metrics = analyze_prefix(
                 s3_path=path,
                 access_key_id=s3_config.access_key_id,
@@ -222,12 +241,21 @@ def analyze_storage(
         elif storage_type == "ssh":
             ssh_config = config.ssh
             if ssh_config is None:
-                raise ValidationError("SSH configuration is required for SSH storage type")
-            
-            hostname, username, actual_path = _parse_ssh_path(path, ssh_config.hostname, ssh_config.username)
+                raise ValidationError(
+                    "SSH configuration is required for SSH storage type"
+                )
 
-            analyzer = RemoteDirectoryAnalyzer(ssh_config.hostname, ssh_config.username, ssh_config.ssh_key)
-            metrics = calculate_directory_metrics(analyzer, actual_path, config.timeout)
+            _, _, actual_path = _parse_ssh_path(
+                path, ssh_config.hostname, ssh_config.username
+            )
+
+            metrics = analyze_remote_directory(
+                hostname=ssh_config.hostname,
+                username=ssh_config.username,
+                ssh_key=ssh_config.ssh_key,
+                path=actual_path,
+                timeout=config.timeout,
+            )
             return StorageMetrics(
                 item_count=metrics.file_count,
                 total_bytes=metrics.total_bytes,
@@ -236,8 +264,7 @@ def analyze_storage(
             )
 
         else:  # local
-            analyzer = LocalDirectoryAnalyzer()
-            metrics = calculate_directory_metrics(analyzer, path, config.timeout)
+            metrics = analyze_local_directory(path, config.timeout)
             return StorageMetrics(
                 item_count=metrics.file_count,
                 total_bytes=metrics.total_bytes,
@@ -281,18 +308,7 @@ def list_storage_contents(
             f"content_type must be 'subdirectories' or 'files', got: {content_type}"
         )
 
-    # Use default config if none provided
-    if config is None:
-        config = StorageConfig()
-    
-    # Determine storage type based on config and path format
-    if config.ssh is not None:
-        storage_type = "ssh"
-    elif config.s3 is not None:
-        storage_type = "s3"
-    else:
-        storage_type = _detect_storage_type(path)
-
+    storage_type, config = _determine_storage_type_and_config(path, config)
     logger.info(
         "Listing storage contents",
         path=path,
@@ -308,6 +324,11 @@ def list_storage_contents(
                 list_type = "objects"
 
             s3_config = config.s3
+            if s3_config is None:
+                raise ValidationError(
+                    "S3 configuration is required for S3 storage type"
+                )
+
             return list_objects_by_prefix(
                 s3_path=path,
                 list_type=list_type,
@@ -326,19 +347,27 @@ def list_storage_contents(
 
             ssh_config = config.ssh
             if ssh_config is None:
-                raise ValidationError("SSH configuration is required for SSH storage type")
-            
-            hostname, username, actual_path = _parse_ssh_path(path, ssh_config.hostname, ssh_config.username)
+                raise ValidationError(
+                    "SSH configuration is required for SSH storage type"
+                )
 
-            lister = RemoteSubdirectoryLister(ssh_config.hostname, ssh_config.username, ssh_config.ssh_key)
-            return list_subdirectories(lister, actual_path, config.timeout)
+            _, _, actual_path = _parse_ssh_path(
+                path, ssh_config.hostname, ssh_config.username
+            )
+
+            return list_remote_subdirectories(
+                hostname=ssh_config.hostname,
+                username=ssh_config.username,
+                ssh_key=ssh_config.ssh_key,
+                path=actual_path,
+                timeout=config.timeout,
+            )
 
         else:  # local
             if content_type == "files":
                 raise ValidationError("File listing not implemented for local storage")
 
-            lister = LocalSubdirectoryLister()
-            return list_subdirectories(lister, path, config.timeout)
+            return list_local_subdirectories(path, config.timeout)
 
     except Exception as e:
         error_msg = f"Failed to list storage contents '{path}': {e}"
@@ -371,18 +400,7 @@ def verify_storage_access(
     Raises:
         ValidationError: If parameters are invalid or missing
     """
-    # Use default config if none provided
-    if config is None:
-        config = StorageConfig()
-    
-    # Determine storage type based on config and path format
-    if config.ssh is not None:
-        storage_type = "ssh"
-    elif config.s3 is not None:
-        storage_type = "s3"
-    else:
-        storage_type = _detect_storage_type(path)
-
+    storage_type, config = _determine_storage_type_and_config(path, config)
     logger.info(
         "Verifying storage access",
         path=path,
@@ -393,6 +411,11 @@ def verify_storage_access(
     try:
         if storage_type == "s3":
             s3_config = config.s3
+            if s3_config is None:
+                raise ValidationError(
+                    "S3 configuration is required for S3 storage type"
+                )
+
             return verify_s3_access(
                 s3_path=path,
                 operation=operation,
@@ -407,11 +430,13 @@ def verify_storage_access(
         elif storage_type == "ssh":
             ssh_config = config.ssh
             if ssh_config is None:
-                raise ValidationError("SSH configuration is required for SSH storage type")
-            
+                raise ValidationError(
+                    "SSH configuration is required for SSH storage type"
+                )
+
             # Parse SSH path to get the actual path component
             try:
-                parsed_hostname, parsed_username, actual_path = _parse_ssh_path(
+                _, _, actual_path = _parse_ssh_path(
                     path, ssh_config.hostname, ssh_config.username
                 )
                 # Use config values (they take precedence)
@@ -435,11 +460,8 @@ def verify_storage_access(
                 # Use list_storage_contents to test access
                 # We only need to check if we can list with max_items=1
                 # Create a temporary config for this call
-                ssh_test_config = StorageConfig.from_ssh(
-                    hostname=hostname, 
-                    username=ssh_username, 
-                    ssh_key=ssh_key, 
-                    timeout=30
+                ssh_test_config = StorageConfig(
+                    ssh=SSHConfig(hostname, ssh_username, ssh_key), timeout=30
                 )
                 list_storage_contents(
                     path=actual_path,
