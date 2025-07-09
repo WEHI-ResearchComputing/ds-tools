@@ -2,8 +2,8 @@
 
 This module provides a single interface for storage operations across different
 backends including local filesystems, remote SSH connections, and S3-compatible
-object storage. It automatically detects storage type based on path format and
-routes operations to the appropriate backend implementation.
+object storage. It automatically determines the storage type (SSH, S3, or local)
+based on path format and routes operations to the appropriate backend implementation.
 
 The unified interface abstracts away the differences between storage backends,
 providing consistent semantics and error handling across all supported storage
@@ -15,10 +15,11 @@ Key Functions:
     - verify_storage_access: Verify read/write/list permissions
 
 Storage Type Detection:
-    Storage type is automatically detected based on path format:
-    - s3://bucket/prefix -> S3 storage
-    - ssh://user@host/path or user@host:/path -> SSH remote filesystem
-    - Any other path -> Local filesystem
+    Storage type is automatically determined using this priority order:
+    1. If SSH parameters (hostname, username, ssh_key) are provided -> SSH storage
+    2. Otherwise, based on path format:
+       - s3://bucket/prefix -> S3 storage
+       - Any other path -> Local filesystem
 
 Path Format Examples:
     - Local: "/home/user/data", "./relative/path"
@@ -180,28 +181,37 @@ def analyze_storage(
 ) -> StorageMetrics:
     """Analyze storage to get item count and total size.
 
-    Auto-detects storage type from path format and routes to appropriate backend.
+    Determines storage type (SSH, S3, or local) using this priority:
+    1. If SSH parameters are provided -> SSH storage
+    2. Otherwise, based on path format (s3:// -> S3, everything else -> local)
 
     Args:
         path: Storage path (local path, ssh://user@host/path, or s3://bucket/prefix)
-        hostname: SSH hostname (for ssh:// paths or when auto-detection fails)
-        username: SSH username (for ssh:// paths or when auto-detection fails)
-        ssh_key: SSH private key path (for ssh:// paths or when auto-detection fails)
-        access_key_id: AWS access key ID (for s3:// paths)
-        secret_access_key: AWS secret access key (for s3:// paths)
-        session_token: AWS session token (for s3:// paths)
-        region_name: AWS region name (for s3:// paths)
-        endpoint_url: Custom S3 endpoint URL (for s3:// paths)
-        aws_profile: AWS CLI profile name (for s3:// paths)
+        hostname: SSH hostname (if provided, forces SSH storage type)
+        username: SSH username (if provided, forces SSH storage type)
+        ssh_key: SSH private key path (if provided, forces SSH storage type)
+        access_key_id: AWS access key ID (for S3 storage)
+        secret_access_key: AWS secret access key (for S3 storage)
+        session_token: AWS session token (for S3 storage)
+        region_name: AWS region name (for S3 storage)
+        endpoint_url: Custom S3 endpoint URL (for S3 storage)
+        aws_profile: AWS CLI profile name (for S3 storage)
         timeout: Command timeout in seconds (for filesystem operations)
 
     Returns:
         StorageMetrics with unified format
 
     Raises:
-        ValidationError: If storage type cannot be determined or parameters are missing
+        ValidationError: If storage type cannot be determined or required parameters
+            are missing
     """
-    storage_type = _detect_storage_type(path)
+    # Determine storage type based on path format and provided parameters
+    # If SSH parameters are provided, use SSH regardless of path format
+    if hostname or username or ssh_key:
+        storage_type = "ssh"
+    else:
+        storage_type = _detect_storage_type(path)
+
     logger.info("Analyzing storage", path=path, storage_type=storage_type)
 
     try:
@@ -277,12 +287,16 @@ def list_storage_contents(
 ) -> list[str]:
     """List storage contents (subdirectories/prefixes or files/objects).
 
+    Determines storage type (SSH, S3, or local) using this priority:
+    1. If SSH parameters are provided -> SSH storage
+    2. Otherwise, based on path format (s3:// -> S3, everything else -> local)
+
     Args:
         path: Storage path
         content_type: "subdirectories" for dirs/prefixes, "files" for files/objects
-        hostname: SSH hostname (for remote operations)
-        username: SSH username (for remote operations)
-        ssh_key: SSH private key path (for remote operations)
+        hostname: SSH hostname (if provided, forces SSH storage type)
+        username: SSH username (if provided, forces SSH storage type)
+        ssh_key: SSH private key path (if provided, forces SSH storage type)
         access_key_id: AWS access key ID (for S3 operations)
         secret_access_key: AWS secret access key (for S3 operations)
         session_token: AWS session token (for S3 operations)
@@ -303,7 +317,13 @@ def list_storage_contents(
             f"content_type must be 'subdirectories' or 'files', got: {content_type}"
         )
 
-    storage_type = _detect_storage_type(path)
+    # Determine storage type based on path format and provided parameters
+    # If SSH parameters are provided, use SSH regardless of path format
+    if hostname or username or ssh_key:
+        storage_type = "ssh"
+    else:
+        storage_type = _detect_storage_type(path)
+
     logger.info(
         "Listing storage contents",
         path=path,
@@ -377,13 +397,17 @@ def verify_storage_access(
 ) -> bool:
     """Verify access to storage location.
 
+    Determines storage type (SSH, S3, or local) using this priority:
+    1. If SSH parameters are provided -> SSH storage
+    2. Otherwise, based on path format (s3:// -> S3, everything else -> local)
+
     Args:
         path: Storage path
         username: Username to check access for (filesystem only)
         operation: Operation to test ("read", "write", "list")
-        hostname: SSH hostname (for remote operations)
-        ssh_username: SSH username (for remote operations)
-        ssh_key: SSH private key path (for remote operations)
+        hostname: SSH hostname (if provided, forces SSH storage type)
+        ssh_username: SSH username (if provided, forces SSH storage type)
+        ssh_key: SSH private key path (if provided, forces SSH storage type)
         access_key_id: AWS access key ID (for S3 operations)
         secret_access_key: AWS secret access key (for S3 operations)
         session_token: AWS session token (for S3 operations)
@@ -397,7 +421,13 @@ def verify_storage_access(
     Raises:
         ValidationError: If parameters are invalid or missing
     """
-    storage_type = _detect_storage_type(path)
+    # Determine storage type based on path format and provided parameters
+    # If SSH parameters are provided, use SSH regardless of path format
+    if hostname or ssh_username or ssh_key:
+        storage_type = "ssh"
+    else:
+        storage_type = _detect_storage_type(path)
+
     logger.info(
         "Verifying storage access",
         path=path,
