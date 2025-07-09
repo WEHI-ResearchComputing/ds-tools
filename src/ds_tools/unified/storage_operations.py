@@ -38,6 +38,7 @@ from urllib.parse import urlparse
 
 from ds_tools.core import get_logger
 from ds_tools.core.exceptions import ValidationError
+from ds_tools.storage_config import StorageConfig
 from ds_tools.filesystem import (
     LocalDirectoryAnalyzer,
     LocalSubdirectoryLister,
@@ -165,38 +166,18 @@ def _parse_ssh_path(
 
 def analyze_storage(
     path: str,
-    # SSH parameters
-    hostname: Optional[str] = None,
-    username: Optional[str] = None,
-    ssh_key: Optional[str] = None,
-    # S3 parameters
-    access_key_id: Optional[str] = None,
-    secret_access_key: Optional[str] = None,
-    session_token: Optional[str] = None,
-    region_name: str = "us-east-1",
-    endpoint_url: Optional[str] = None,
-    aws_profile: Optional[str] = None,
-    # Common parameters
-    timeout: int = 300,
+    config: Optional[StorageConfig] = None,
 ) -> StorageMetrics:
     """Analyze storage to get item count and total size.
 
-    Determines storage type (SSH, S3, or local) using this priority:
-    1. If SSH parameters are provided -> SSH storage
-    2. Otherwise, based on path format (s3:// -> S3, everything else -> local)
+    Determines storage type using this priority:
+    1. If config.ssh is provided -> SSH storage
+    2. If config.s3 is provided -> S3 storage
+    3. Otherwise, based on path format (s3:// -> S3, everything else -> local)
 
     Args:
         path: Storage path (local path, ssh://user@host/path, or s3://bucket/prefix)
-        hostname: SSH hostname (if provided, forces SSH storage type)
-        username: SSH username (if provided, forces SSH storage type)
-        ssh_key: SSH private key path (if provided, forces SSH storage type)
-        access_key_id: AWS access key ID (for S3 storage)
-        secret_access_key: AWS secret access key (for S3 storage)
-        session_token: AWS session token (for S3 storage)
-        region_name: AWS region name (for S3 storage)
-        endpoint_url: Custom S3 endpoint URL (for S3 storage)
-        aws_profile: AWS CLI profile name (for S3 storage)
-        timeout: Command timeout in seconds (for filesystem operations)
+        config: Optional StorageConfig with SSH/S3 configuration
 
     Returns:
         StorageMetrics with unified format
@@ -205,10 +186,15 @@ def analyze_storage(
         ValidationError: If storage type cannot be determined or required parameters
             are missing
     """
-    # Determine storage type based on path format and provided parameters
-    # If SSH parameters are provided, use SSH regardless of path format
-    if hostname or username or ssh_key:
+    # Use default config if none provided
+    if config is None:
+        config = StorageConfig()
+    
+    # Determine storage type based on config and path format
+    if config.ssh is not None:
         storage_type = "ssh"
+    elif config.s3 is not None:
+        storage_type = "s3"
     else:
         storage_type = _detect_storage_type(path)
 
@@ -216,14 +202,15 @@ def analyze_storage(
 
     try:
         if storage_type == "s3":
+            s3_config = config.s3
             metrics = analyze_prefix(
                 s3_path=path,
-                access_key_id=access_key_id,
-                secret_access_key=secret_access_key,
-                session_token=session_token,
-                region_name=region_name,
-                endpoint_url=endpoint_url,
-                aws_profile=aws_profile,
+                access_key_id=s3_config.access_key_id,
+                secret_access_key=s3_config.secret_access_key,
+                session_token=s3_config.session_token,
+                region_name=s3_config.region_name,
+                endpoint_url=s3_config.endpoint_url,
+                aws_profile=s3_config.aws_profile,
             )
             return StorageMetrics(
                 item_count=metrics.object_count,
@@ -233,17 +220,14 @@ def analyze_storage(
             )
 
         elif storage_type == "ssh":
-            hostname, username, actual_path = _parse_ssh_path(path, hostname, username)
+            ssh_config = config.ssh
+            if ssh_config is None:
+                raise ValidationError("SSH configuration is required for SSH storage type")
+            
+            hostname, username, actual_path = _parse_ssh_path(path, ssh_config.hostname, ssh_config.username)
 
-            if not all([hostname, username, ssh_key]):
-                raise ValidationError(
-                    "SSH operations require hostname, username, and ssh_key parameters"
-                )
-
-            # Type checker safety: all values guaranteed to be str at this point
-            assert hostname is not None and username is not None and ssh_key is not None
-            analyzer = RemoteDirectoryAnalyzer(hostname, username, ssh_key)
-            metrics = calculate_directory_metrics(analyzer, actual_path, timeout)
+            analyzer = RemoteDirectoryAnalyzer(ssh_config.hostname, ssh_config.username, ssh_config.ssh_key)
+            metrics = calculate_directory_metrics(analyzer, actual_path, config.timeout)
             return StorageMetrics(
                 item_count=metrics.file_count,
                 total_bytes=metrics.total_bytes,
@@ -253,7 +237,7 @@ def analyze_storage(
 
         else:  # local
             analyzer = LocalDirectoryAnalyzer()
-            metrics = calculate_directory_metrics(analyzer, path, timeout)
+            metrics = calculate_directory_metrics(analyzer, path, config.timeout)
             return StorageMetrics(
                 item_count=metrics.file_count,
                 total_bytes=metrics.total_bytes,
@@ -270,41 +254,21 @@ def analyze_storage(
 def list_storage_contents(
     path: str,
     content_type: str = "subdirectories",
-    # SSH parameters
-    hostname: Optional[str] = None,
-    username: Optional[str] = None,
-    ssh_key: Optional[str] = None,
-    # S3 parameters
-    access_key_id: Optional[str] = None,
-    secret_access_key: Optional[str] = None,
-    session_token: Optional[str] = None,
-    region_name: str = "us-east-1",
-    endpoint_url: Optional[str] = None,
-    aws_profile: Optional[str] = None,
-    # Common parameters
-    timeout: int = 300,
     max_items: int = 1000,
+    config: Optional[StorageConfig] = None,
 ) -> list[str]:
     """List storage contents (subdirectories/prefixes or files/objects).
 
-    Determines storage type (SSH, S3, or local) using this priority:
-    1. If SSH parameters are provided -> SSH storage
-    2. Otherwise, based on path format (s3:// -> S3, everything else -> local)
+    Determines storage type using this priority:
+    1. If config.ssh is provided -> SSH storage
+    2. If config.s3 is provided -> S3 storage
+    3. Otherwise, based on path format (s3:// -> S3, everything else -> local)
 
     Args:
         path: Storage path
         content_type: "subdirectories" for dirs/prefixes, "files" for files/objects
-        hostname: SSH hostname (if provided, forces SSH storage type)
-        username: SSH username (if provided, forces SSH storage type)
-        ssh_key: SSH private key path (if provided, forces SSH storage type)
-        access_key_id: AWS access key ID (for S3 operations)
-        secret_access_key: AWS secret access key (for S3 operations)
-        session_token: AWS session token (for S3 operations)
-        region_name: AWS region name (for S3 operations)
-        endpoint_url: Custom S3 endpoint URL (for S3 operations)
-        aws_profile: AWS CLI profile name (for S3 operations)
-        timeout: Command timeout in seconds (for filesystem operations)
         max_items: Maximum number of items to return
+        config: Optional StorageConfig with SSH/S3 configuration
 
     Returns:
         List of paths to subdirectories/prefixes or files/objects
@@ -317,10 +281,15 @@ def list_storage_contents(
             f"content_type must be 'subdirectories' or 'files', got: {content_type}"
         )
 
-    # Determine storage type based on path format and provided parameters
-    # If SSH parameters are provided, use SSH regardless of path format
-    if hostname or username or ssh_key:
+    # Use default config if none provided
+    if config is None:
+        config = StorageConfig()
+    
+    # Determine storage type based on config and path format
+    if config.ssh is not None:
         storage_type = "ssh"
+    elif config.s3 is not None:
+        storage_type = "s3"
     else:
         storage_type = _detect_storage_type(path)
 
@@ -338,15 +307,16 @@ def list_storage_contents(
             else:
                 list_type = "objects"
 
+            s3_config = config.s3
             return list_objects_by_prefix(
                 s3_path=path,
                 list_type=list_type,
-                access_key_id=access_key_id,
-                secret_access_key=secret_access_key,
-                session_token=session_token,
-                region_name=region_name,
-                endpoint_url=endpoint_url,
-                aws_profile=aws_profile,
+                access_key_id=s3_config.access_key_id,
+                secret_access_key=s3_config.secret_access_key,
+                session_token=s3_config.session_token,
+                region_name=s3_config.region_name,
+                endpoint_url=s3_config.endpoint_url,
+                aws_profile=s3_config.aws_profile,
                 max_keys=max_items,
             )
 
@@ -354,24 +324,21 @@ def list_storage_contents(
             if content_type == "files":
                 raise ValidationError("File listing not implemented for SSH storage")
 
-            hostname, username, actual_path = _parse_ssh_path(path, hostname, username)
+            ssh_config = config.ssh
+            if ssh_config is None:
+                raise ValidationError("SSH configuration is required for SSH storage type")
+            
+            hostname, username, actual_path = _parse_ssh_path(path, ssh_config.hostname, ssh_config.username)
 
-            if not all([hostname, username, ssh_key]):
-                raise ValidationError(
-                    "SSH operations require hostname, username, and ssh_key parameters"
-                )
-
-            # Type checker safety: all values guaranteed to be str at this point
-            assert hostname is not None and username is not None and ssh_key is not None
-            lister = RemoteSubdirectoryLister(hostname, username, ssh_key)
-            return list_subdirectories(lister, actual_path, timeout)
+            lister = RemoteSubdirectoryLister(ssh_config.hostname, ssh_config.username, ssh_config.ssh_key)
+            return list_subdirectories(lister, actual_path, config.timeout)
 
         else:  # local
             if content_type == "files":
                 raise ValidationError("File listing not implemented for local storage")
 
             lister = LocalSubdirectoryLister()
-            return list_subdirectories(lister, path, timeout)
+            return list_subdirectories(lister, path, config.timeout)
 
     except Exception as e:
         error_msg = f"Failed to list storage contents '{path}': {e}"
@@ -381,39 +348,22 @@ def list_storage_contents(
 
 def verify_storage_access(
     path: str,
-    username: Optional[str] = None,
     operation: str = "read",
-    # SSH parameters
-    hostname: Optional[str] = None,
-    ssh_username: Optional[str] = None,
-    ssh_key: Optional[str] = None,
-    # S3 parameters
-    access_key_id: Optional[str] = None,
-    secret_access_key: Optional[str] = None,
-    session_token: Optional[str] = None,
-    region_name: str = "us-east-1",
-    endpoint_url: Optional[str] = None,
-    aws_profile: Optional[str] = None,
+    config: Optional[StorageConfig] = None,
+    username: Optional[str] = None,
 ) -> bool:
     """Verify access to storage location.
 
-    Determines storage type (SSH, S3, or local) using this priority:
-    1. If SSH parameters are provided -> SSH storage
-    2. Otherwise, based on path format (s3:// -> S3, everything else -> local)
+    Determines storage type using this priority:
+    1. If config.ssh is provided -> SSH storage
+    2. If config.s3 is provided -> S3 storage
+    3. Otherwise, based on path format (s3:// -> S3, everything else -> local)
 
     Args:
         path: Storage path
-        username: Username to check access for (filesystem only)
         operation: Operation to test ("read", "write", "list")
-        hostname: SSH hostname (if provided, forces SSH storage type)
-        ssh_username: SSH username (if provided, forces SSH storage type)
-        ssh_key: SSH private key path (if provided, forces SSH storage type)
-        access_key_id: AWS access key ID (for S3 operations)
-        secret_access_key: AWS secret access key (for S3 operations)
-        session_token: AWS session token (for S3 operations)
-        region_name: AWS region name (for S3 operations)
-        endpoint_url: Custom S3 endpoint URL (for S3 operations)
-        aws_profile: AWS CLI profile name (for S3 operations)
+        config: Optional StorageConfig with SSH/S3 configuration
+        username: Username to check access for (local filesystem only)
 
     Returns:
         True if access is permitted
@@ -421,10 +371,15 @@ def verify_storage_access(
     Raises:
         ValidationError: If parameters are invalid or missing
     """
-    # Determine storage type based on path format and provided parameters
-    # If SSH parameters are provided, use SSH regardless of path format
-    if hostname or ssh_username or ssh_key:
+    # Use default config if none provided
+    if config is None:
+        config = StorageConfig()
+    
+    # Determine storage type based on config and path format
+    if config.ssh is not None:
         storage_type = "ssh"
+    elif config.s3 is not None:
+        storage_type = "s3"
     else:
         storage_type = _detect_storage_type(path)
 
@@ -437,32 +392,34 @@ def verify_storage_access(
 
     try:
         if storage_type == "s3":
+            s3_config = config.s3
             return verify_s3_access(
                 s3_path=path,
                 operation=operation,
-                access_key_id=access_key_id,
-                secret_access_key=secret_access_key,
-                session_token=session_token,
-                region_name=region_name,
-                endpoint_url=endpoint_url,
-                aws_profile=aws_profile,
+                access_key_id=s3_config.access_key_id,
+                secret_access_key=s3_config.secret_access_key,
+                session_token=s3_config.session_token,
+                region_name=s3_config.region_name,
+                endpoint_url=s3_config.endpoint_url,
+                aws_profile=s3_config.aws_profile,
             )
 
         elif storage_type == "ssh":
-            # Parse SSH path and get components
+            ssh_config = config.ssh
+            if ssh_config is None:
+                raise ValidationError("SSH configuration is required for SSH storage type")
+            
+            # Parse SSH path to get the actual path component
             try:
                 parsed_hostname, parsed_username, actual_path = _parse_ssh_path(
-                    path, hostname, ssh_username
+                    path, ssh_config.hostname, ssh_config.username
                 )
-                hostname = parsed_hostname
-                ssh_username = parsed_username
+                # Use config values (they take precedence)
+                hostname = ssh_config.hostname
+                ssh_username = ssh_config.username
+                ssh_key = ssh_config.ssh_key
             except ValueError as e:
                 raise ValidationError(f"Invalid SSH path format: {e}")
-
-            if not ssh_key:
-                raise ValidationError(
-                    "SSH key path required for remote access verification"
-                )
 
             # For SSH, we verify access by attempting to list the directory
             # This tests both connectivity and permissions
@@ -477,14 +434,18 @@ def verify_storage_access(
 
                 # Use list_storage_contents to test access
                 # We only need to check if we can list with max_items=1
+                # Create a temporary config for this call
+                ssh_test_config = StorageConfig.from_ssh(
+                    hostname=hostname, 
+                    username=ssh_username, 
+                    ssh_key=ssh_key, 
+                    timeout=30
+                )
                 list_storage_contents(
                     path=actual_path,
                     content_type="subdirectories",
                     max_items=1,
-                    hostname=hostname,
-                    username=ssh_username,
-                    ssh_key=ssh_key,
-                    timeout=30,  # Use shorter timeout for access check
+                    config=ssh_test_config,
                 )
 
                 # If we got here without exception, we have at least read access
