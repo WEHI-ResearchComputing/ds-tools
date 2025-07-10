@@ -4,11 +4,11 @@ Library of tools and integrations to help build dynamic user interfaces and comp
 
 ## Overview
 
-`ds-tools` provides a unified interface for storage operations across local filesystems, remote SSH connections, and S3-compatible object storage. It's designed to be integrated with the WEHI Datasets Service backend to expose RPC-like endpoints for enhanced UI and workflow capabilities.
+`ds-tools` provides a unified interface for storage operations across NFS/NFS4 filesystems, remote SSH connections, and S3-compatible object storage. It's designed to be integrated with the WEHI Datasets Service backend to expose RPC-like endpoints for enhanced UI and workflow capabilities.
 
 ## Features
 
-- **Unified Storage Operations**: Single API for local, SSH, and S3 storage
+- **Unified Storage Operations**: Single API for NFS, NFS4, SSH, and S3 storage
 - **Storage Analysis**: Calculate file counts and total sizes across different storage types
 - **Directory Listing**: List subdirectories/prefixes and files/objects
 - **Access Verification**: Verify read/write permissions for different storage backends
@@ -37,24 +37,27 @@ uv add git+ssh://git@github.com/WEHI-ResearchComputing/ds-tools.git
 
 ### CLI Commands
 
-The CLI provides three main commands that work across all storage types:
+The CLI provides three main commands that work across all storage types. All commands require explicit `--storage-type` specification:
 
 #### Analyze Storage
 
 Calculate file/object count and total size:
 
 ```bash
-# Local directory
-ds-tools analyze /local/path
+# NFS filesystem
+ds-tools analyze /data/path --storage-type nfs --base-path /mnt/nfs
+
+# NFS4 filesystem
+ds-tools analyze /data/path --storage-type nfs4 --base-path /mnt/nfs4
 
 # Remote directory via SSH
-ds-tools analyze ssh://user@host/path --ssh-key /path/to/key
+ds-tools analyze /remote/path --storage-type ssh --hostname server.com --username user --ssh-key ~/.ssh/id_rsa
 
 # S3 bucket/prefix
-ds-tools analyze s3://bucket/prefix --access-key-id KEY --secret-access-key SECRET
+ds-tools analyze s3://bucket/prefix --storage-type s3 --aws-profile myprofile
 
-# With custom endpoint (e.g., MinIO)
-ds-tools analyze s3://bucket/prefix --endpoint-url http://localhost:9000
+# S3 with explicit credentials
+ds-tools analyze s3://bucket/prefix --storage-type s3 --access-key-id KEY --secret-access-key SECRET --region us-east-1
 ```
 
 #### List Storage Contents
@@ -63,12 +66,13 @@ List subdirectories/prefixes or files/objects:
 
 ```bash
 # List subdirectories (default)
-ds-tools list /local/path
-ds-tools list ssh://user@host/path --ssh-key /path/to/key
-ds-tools list s3://bucket/prefix --access-key-id KEY --secret-access-key SECRET
+ds-tools list /data/path --storage-type nfs --base-path /mnt/nfs
+ds-tools list /data/path --storage-type nfs4 --base-path /mnt/nfs4
+ds-tools list /remote/path --storage-type ssh --hostname server.com --username user --ssh-key ~/.ssh/id_rsa
+ds-tools list s3://bucket/prefix --storage-type s3 --aws-profile myprofile
 
-# List files/objects
-ds-tools list s3://bucket/prefix --type files --max-items 100
+# List files/objects (S3 only)
+ds-tools list s3://bucket/prefix --storage-type s3 --content-type files --max-items 100 --aws-profile myprofile
 ```
 
 #### Verify Access
@@ -76,11 +80,17 @@ ds-tools list s3://bucket/prefix --type files --max-items 100
 Check storage access permissions:
 
 ```bash
-# Local filesystem
-ds-tools verify-access /local/path --username myuser --operation read
+# NFS filesystem (uses getfacl)
+ds-tools verify-access /data/path --storage-type nfs --base-path /mnt/nfs --fs-username myuser --operation read
+
+# NFS4 filesystem (uses nfs4_getfacl)
+ds-tools verify-access /data/path --storage-type nfs4 --base-path /mnt/nfs4 --fs-username myuser --operation read
+
+# SSH access
+ds-tools verify-access /remote/path --storage-type ssh --hostname server.com --username user --ssh-key ~/.ssh/id_rsa --operation read
 
 # S3 access
-ds-tools verify-access s3://bucket/prefix --operation write --access-key-id KEY
+ds-tools verify-access s3://bucket/prefix --storage-type s3 --operation write --aws-profile myprofile
 ```
 
 ### Python API
@@ -93,22 +103,42 @@ from ds_tools import (
     analyze_storage,
     list_storage_contents,
     verify_storage_access,
+    NFSStorageConfig,
+    NFS4StorageConfig,
+    SSHStorageConfig,
+    S3StorageConfig,
 )
 
+# Create storage configurations
+nfs_config = NFSStorageConfig(base_path="/mnt/nfs")
+nfs4_config = NFS4StorageConfig(base_path="/mnt/nfs4")
+ssh_config = SSHStorageConfig(
+    hostname="server.com",
+    username="user",
+    ssh_key_path="/path/to/key"
+)
+s3_config = S3StorageConfig(aws_profile="myprofile")
+
 # Analyze storage across different backends
-metrics = analyze_storage("s3://my-bucket/data/")
-print(f"Objects: {metrics.item_count}, Size: {metrics.total_bytes} bytes")
+metrics = analyze_storage("/data/path", nfs_config)
+print(f"Files: {metrics.item_count}, Size: {metrics.total_bytes} bytes")
 
 # List subdirectories/prefixes
-subdirs = list_storage_contents("/local/path", content_type="subdirectories")
-objects = list_storage_contents("s3://bucket/", content_type="files", max_items=1000)
+subdirs = list_storage_contents("/data/path", nfs4_config, content_type="subdirectories")
+objects = list_storage_contents("s3://bucket/", s3_config, content_type="files", max_items=1000)
 
-# Verify access permissions
-has_access = verify_storage_access(
-    "s3://bucket/sensitive/",
+# Verify access permissions (NFS uses getfacl, NFS4 uses nfs4_getfacl)
+has_nfs_access = verify_storage_access(
+    "/data/path",
+    nfs_config,
     operation="read",
-    access_key_id="KEY",
-    secret_access_key="SECRET"
+    username="myuser"
+)
+
+has_s3_access = verify_storage_access(
+    "s3://bucket/sensitive/",
+    s3_config,
+    operation="read"
 )
 ```
 
@@ -140,14 +170,28 @@ metrics = analyzer.analyze_prefix("s3://bucket/prefix")
 # Or use convenience functions
 metrics = analyze_prefix("s3://bucket/prefix", access_key_id="KEY", secret_access_key="SECRET")
 
-# New configuration objects for cleaner parameter management
-from ds_tools.storage_config import StorageConfig, SSHConfig, S3Config
+# Configuration objects for type-safe parameter management
+from ds_tools.schemas import NFSStorageConfig, NFS4StorageConfig, SSHStorageConfig, S3StorageConfig
+
+# NFS configuration
+nfs_config = NFSStorageConfig(base_path="/mnt/nfs")
+
+# NFS4 configuration
+nfs4_config = NFS4StorageConfig(base_path="/mnt/nfs4")
 
 # SSH configuration
-ssh_config = StorageConfig.from_ssh("hostname", "username", "/path/to/key")
+ssh_config = SSHStorageConfig(
+    hostname="server.com",
+    username="user", 
+    ssh_key_path="/path/to/key"
+)
 
 # S3 configuration  
-s3_config = StorageConfig.from_s3(access_key_id="KEY", secret_access_key="SECRET")
+s3_config = S3StorageConfig(
+    access_key_id="KEY",
+    secret_access_key="SECRET",
+    region_name="us-east-1"
+)
 ```
 
 ## Development
@@ -207,7 +251,7 @@ ds-tools/
 │       ├── __init__.py           # Main exports and unified interface
 │       ├── cli.py                # CLI interface with Typer
 │       ├── cli_params.py         # Shared CLI parameter utilities
-│       ├── storage_config.py     # Unified storage configuration objects
+│       ├── schemas.py            # Storage configuration schemas
 │       ├── core/                 # Core utilities
 │       │   ├── __init__.py
 │       │   ├── config.py         # Configuration management
@@ -241,12 +285,13 @@ The library provides clear error messages and proper exception handling:
 
 - `ValidationError`: Input validation failures
 - `CommandExecutionError`: Command execution failures
-- `NotImplementedError`: For unimplemented features (SSH access verification, local write verification)
+- `NotImplementedError`: For unimplemented features (SSH write verification, NFS/NFS4 write verification)
 
 ## Security Considerations
 
-- SSH operations require key-based authentication
-- S3 credentials support multiple authentication methods (explicit keys, profiles, IAM roles)
+- **NFS/NFS4**: Access verification uses `getfacl` and `nfs4_getfacl` commands respectively for ACL-based permission checking
+- **SSH**: Operations require key-based authentication
+- **S3**: Credentials support multiple authentication methods (explicit keys, profiles, IAM roles)
 - Access verification operations are non-destructive where possible
 - Write access tests use safe operations (multipart upload creation/abortion for S3)
 

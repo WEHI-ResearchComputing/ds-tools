@@ -32,7 +32,12 @@ from .cli_params import (
     ssh_username_option,
     timeout_option,
 )
-from .schemas import LocalStorageConfig, S3StorageConfig, SSHStorageConfig
+from .schemas import (
+    NFS4StorageConfig,
+    NFSStorageConfig,
+    S3StorageConfig,
+    SSHStorageConfig,
+)
 from .unified import (
     analyze_storage,
     list_storage_contents,
@@ -71,18 +76,18 @@ def main(
 def storage_type_option():
     """Storage type option factory."""
     return Annotated[
-        Literal["local", "ssh", "s3"],
+        Literal["nfs", "nfs4", "ssh", "s3"],
         typer.Option(
             "--storage-type",
             "-t",
-            help="Storage type: local, ssh, or s3",
+            help="Storage type: nfs, nfs4, ssh, or s3",
             case_sensitive=False,
         ),
     ]
 
 
 def _create_storage_config(
-    storage_type: Literal["local", "ssh", "s3"],
+    storage_type: Literal["nfs", "nfs4", "ssh", "s3"],
     hostname: Optional[str] = None,
     username: Optional[str] = None,
     ssh_key: Optional[str] = None,
@@ -92,6 +97,7 @@ def _create_storage_config(
     region_name: Optional[str] = None,
     endpoint_url: Optional[str] = None,
     aws_profile: Optional[str] = None,
+    base_path: Optional[str] = None,
 ):
     """Create appropriate storage configuration based on storage type."""
     if storage_type == "ssh":
@@ -116,12 +122,16 @@ def _create_storage_config(
             aws_profile=aws_profile,
         )
 
-    elif storage_type == "local":
-        return LocalStorageConfig()
+    elif storage_type == "nfs":
+        return NFSStorageConfig(base_path=base_path)
+
+    elif storage_type == "nfs4":
+        return NFS4StorageConfig(base_path=base_path)
 
     else:
         raise ValueError(
-            f"Invalid storage type: {storage_type}. Must be 'local', 'ssh', or 's3'"
+            f"Invalid storage type: {storage_type}. Must be 'nfs', 'nfs4', 'ssh', "
+            f"or 's3'"
         )
 
 
@@ -140,6 +150,10 @@ def analyze_cmd(
     region_name: aws_region_option() = "us-east-1",
     endpoint_url: aws_endpoint_url_option() = None,
     aws_profile: aws_profile_option() = None,
+    # NFS options
+    base_path: Annotated[
+        Optional[str], typer.Option("--base-path", help="Base path for NFS storage")
+    ] = None,
     # Common options
     timeout: timeout_option() = 300,
 ) -> None:
@@ -147,7 +161,8 @@ def analyze_cmd(
     Analyze storage to get item count and total size.
 
     Examples:
-        Local: ds-tools analyze /data/path --storage-type local
+        NFS: ds-tools analyze /data/path --storage-type nfs --base-path /mnt/nfs
+        NFS4: ds-tools analyze /data/path --storage-type nfs4 --base-path /mnt/nfs4
         SSH: ds-tools analyze /remote/path --storage-type ssh --hostname server.com \
              --username user --ssh-key ~/.ssh/id_rsa
         S3: ds-tools analyze s3://bucket/prefix --storage-type s3 \
@@ -165,6 +180,7 @@ def analyze_cmd(
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_profile=aws_profile,
+            base_path=base_path,
         )
 
         metrics = analyze_storage(
@@ -210,6 +226,10 @@ def list_cmd(
     region_name: aws_region_option() = "us-east-1",
     endpoint_url: aws_endpoint_url_option() = None,
     aws_profile: aws_profile_option() = None,
+    # NFS options
+    base_path: Annotated[
+        Optional[str], typer.Option("--base-path", help="Base path for NFS storage")
+    ] = None,
     # Common options
     timeout: timeout_option() = 300,
     max_items: max_items_option() = 1000,
@@ -218,7 +238,8 @@ def list_cmd(
     List storage contents (subdirectories/prefixes or files/objects).
 
     Examples:
-        Local: ds-tools list /data/path --storage-type local
+        NFS: ds-tools list /data/path --storage-type nfs --base-path /mnt/nfs
+        NFS4: ds-tools list /data/path --storage-type nfs4 --base-path /mnt/nfs4
         SSH: ds-tools list /remote/path --storage-type ssh --hostname server.com \
              --username user --ssh-key ~/.ssh/id_rsa
         S3: ds-tools list s3://bucket/prefix --storage-type s3 --aws-profile myprofile
@@ -235,6 +256,7 @@ def list_cmd(
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_profile=aws_profile,
+            base_path=base_path,
         )
 
         items = list_storage_contents(
@@ -275,6 +297,10 @@ def verify_access_cmd(
     aws_profile: aws_profile_option() = None,
     # Filesystem options
     fs_username: fs_username_option() = None,
+    # NFS options
+    base_path: Annotated[
+        Optional[str], typer.Option("--base-path", help="Base path for NFS storage")
+    ] = None,
     # Common options
     timeout: timeout_option() = 300,
 ) -> None:
@@ -283,7 +309,10 @@ def verify_access_cmd(
 
     Tests read, write, or list permissions for the specified path.
     Examples:
-        Local: ds-tools verify-access /data/path --storage-type local --fs-username user
+        NFS: ds-tools verify-access /data/path --storage-type nfs \
+             --base-path /mnt/nfs --fs-username user
+        NFS4: ds-tools verify-access /data/path --storage-type nfs4 \
+              --base-path /mnt/nfs4 --fs-username user
         SSH: ds-tools verify-access /remote/path --storage-type ssh \
              --hostname server.com --username user --ssh-key ~/.ssh/id_rsa
         S3: ds-tools verify-access s3://bucket/prefix --storage-type s3 \
@@ -301,6 +330,7 @@ def verify_access_cmd(
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_profile=aws_profile,
+            base_path=base_path,
         )
 
         has_access = verify_storage_access(

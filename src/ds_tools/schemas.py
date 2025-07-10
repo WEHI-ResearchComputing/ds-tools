@@ -5,9 +5,20 @@ from typing import Literal, Union
 from pydantic import BaseModel, Field
 
 
-class LocalStorageConfig(BaseModel):
-    """Configuration for local filesystem storage."""
-    type: Literal["local"] = "local"
+class NFSStorageConfig(BaseModel):
+    """Configuration for NFS filesystem storage."""
+    type: Literal["nfs"] = "nfs"
+    base_path: str | None = Field(
+        default=None, description="Base path for NFS filesystem access"
+    )
+
+
+class NFS4StorageConfig(BaseModel):
+    """Configuration for NFS4 filesystem storage."""
+    type: Literal["nfs4"] = "nfs4"
+    base_path: str | None = Field(
+        default=None, description="Base path for NFS4 filesystem access"
+    )
 
 
 class SSHStorageConfig(BaseModel):
@@ -33,4 +44,6 @@ class S3StorageConfig(BaseModel):
 
 
 # Discriminated union for storage configurations
-StorageConfig = Union[LocalStorageConfig, SSHStorageConfig, S3StorageConfig]
+StorageConfig = Union[
+    NFSStorageConfig, NFS4StorageConfig, SSHStorageConfig, S3StorageConfig
+]

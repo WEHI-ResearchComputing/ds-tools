@@ -45,7 +45,8 @@ from .objectstorage import (
     verify_s3_access,
 )
 from .schemas import (
-    LocalStorageConfig,
+    NFS4StorageConfig,
+    NFSStorageConfig,
     S3StorageConfig,
     SSHStorageConfig,
     StorageConfig,
@@ -61,9 +62,10 @@ from .unified import (
 
 __all__ = [
     # Storage configurations
-    "LocalStorageConfig",
-    "SSHStorageConfig",
+    "NFS4StorageConfig",
+    "NFSStorageConfig",
     "S3StorageConfig",
+    "SSHStorageConfig",
     "StorageConfig",
     # Unified interface
     "StorageMetrics",

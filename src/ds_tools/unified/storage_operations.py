@@ -18,6 +18,8 @@ from ds_tools.objectstorage.s3_operations import (
     verify_s3_access,
 )
 from ds_tools.schemas import (
+    NFS4StorageConfig,
+    NFSStorageConfig,
     S3StorageConfig,
     SSHStorageConfig,
     StorageConfig,
@@ -45,8 +47,8 @@ def analyze_storage(
 
     Args:
         path: Storage path
-        config: Storage configuration (LocalStorageConfig, SSHStorageConfig,
-            or S3StorageConfig)
+        config: Storage configuration (NFSStorageConfig, NFS4StorageConfig,
+            SSHStorageConfig, or S3StorageConfig)
         timeout: Operation timeout in seconds
 
     Returns:
@@ -90,12 +92,12 @@ def analyze_storage(
                 location=path,
             )
 
-        else:  # LocalStorageConfig
+        else:  # NFSStorageConfig or NFS4StorageConfig
             metrics = analyze_local_directory(path, timeout)
             return StorageMetrics(
                 item_count=metrics.file_count,
                 total_bytes=metrics.total_bytes,
-                storage_type="local",
+                storage_type=config.type,
                 location=path,
             )
 
@@ -117,8 +119,8 @@ def list_storage_contents(
 
     Args:
         path: Storage path
-        config: Storage configuration (LocalStorageConfig, SSHStorageConfig,
-            or S3StorageConfig)
+        config: Storage configuration (NFSStorageConfig, NFS4StorageConfig,
+            SSHStorageConfig, or S3StorageConfig)
         content_type: "subdirectories" for dirs/prefixes, "files" for files/objects
         max_items: Maximum number of items to return
         timeout: Operation timeout in seconds
@@ -172,9 +174,9 @@ def list_storage_contents(
                 timeout=timeout,
             )
 
-        else:  # LocalStorageConfig
+        else:  # NFSStorageConfig or NFS4StorageConfig
             if content_type == "files":
-                raise ValidationError("File listing not implemented for local storage")
+                raise ValidationError("File listing not implemented for NFS storage")
 
             return list_local_subdirectories(path, timeout)
 
@@ -196,8 +198,8 @@ def verify_storage_access(
 
     Args:
         path: Storage path
-        config: Storage configuration (LocalStorageConfig, SSHStorageConfig,
-            or S3StorageConfig)
+        config: Storage configuration (NFSStorageConfig, NFS4StorageConfig,
+            SSHStorageConfig, or S3StorageConfig)
         operation: Operation to test ("read", "write", "list")
         timeout: Operation timeout in seconds
         username: Username to check access for (local filesystem only)
@@ -260,18 +262,24 @@ def verify_storage_access(
                 logger.warning("SSH access check failed", path=path, error=str(e))
                 return False
 
-        else:  # LocalStorageConfig
+        else:  # NFSStorageConfig or NFS4StorageConfig
             if not username:
                 raise ValidationError(
-                    "Username required for local filesystem access verification"
+                    "Username required for NFS filesystem access verification"
                 )
 
             if operation in ("read", "list"):
-                return verify_directory_access(FilesystemType.nfs, path, username)
+                if isinstance(config, NFSStorageConfig):
+                    return verify_directory_access(FilesystemType.nfs, path, username)
+                elif isinstance(config, NFS4StorageConfig):
+                    return verify_directory_access(FilesystemType.nfs4, path, username)
+                else:
+                    # Fallback to NFS for any other case
+                    return verify_directory_access(FilesystemType.nfs, path, username)
             elif operation == "write":
                 raise ValidationError(
                     "Write permission verification is not implemented for "
-                    "local filesystem. Consider implementing write permission checks."
+                    "NFS filesystem. Consider implementing write permission checks."
                 )
             else:
                 raise ValidationError(f"Unknown operation: {operation}")
