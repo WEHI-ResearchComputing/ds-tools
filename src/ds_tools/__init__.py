@@ -14,9 +14,11 @@ Key Features:
 Recommended Usage:
     Use the unified interface from this module for most operations:
 
-    >>> from ds_tools import analyze_storage, list_storage_contents
-    >>> metrics = analyze_storage("s3://bucket/prefix")
-    >>> contents = list_storage_contents("/local/path")
+    >>> from ds_tools import list_storage_contents, SSHStorageConfig
+    >>> config = SSHStorageConfig(
+    ...     hostname="server.com", username="user", ssh_key_path="/path/to/key"
+    ... )
+    >>> contents = list_storage_contents("/data/path", config)
 
 Advanced Usage:
     Import specific modules for advanced operations:
@@ -27,7 +29,7 @@ Advanced Usage:
 
 __version__ = "0.1.0"
 
-# Unified interface (recommended)
+# Storage configuration schemas
 # Individual modules (for advanced usage)
 from .filesystem import (
     DirectoryMetrics,
@@ -42,6 +44,14 @@ from .objectstorage import (
     list_objects_by_prefix,
     verify_s3_access,
 )
+from .schemas import (
+    LocalStorageConfig,
+    S3StorageConfig,
+    SSHStorageConfig,
+    StorageConfig,
+)
+
+# Unified interface (recommended)
 from .unified import (
     StorageMetrics,
     analyze_storage,
@@ -50,6 +60,11 @@ from .unified import (
 )
 
 __all__ = [
+    # Storage configurations
+    "LocalStorageConfig",
+    "SSHStorageConfig",
+    "S3StorageConfig",
+    "StorageConfig",
     # Unified interface
     "StorageMetrics",
     "analyze_storage",

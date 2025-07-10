@@ -1,24 +1,17 @@
 """Command-line interface for ds-tools.
 
 This module provides a unified CLI for storage operations across different backends.
-The CLI automatically detects storage type based on path format and routes operations
-to the appropriate backend implementation.
-
-Storage Type Detection:
-    - Local paths: /path/to/directory
-    - SSH paths: ssh://user@host/path or user@host:/path
-    - S3 paths: s3://bucket/prefix
 
 Commands:
     - analyze: Calculate storage metrics (file count, total size)
     - list: List storage contents (subdirectories/prefixes or files/objects)
     - verify-access: Verify storage access permissions
 
-All commands support the same parameter interface but only use relevant parameters
-for each storage type (e.g., SSH parameters are ignored for S3 operations).
+Storage type must be explicitly specified using --storage-type flag.
+Only relevant parameters for each storage type are used.
 """
 
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 import typer
 
@@ -37,9 +30,9 @@ from .cli_params import (
     ssh_hostname_option,
     ssh_key_option,
     ssh_username_option,
-    ssh_username_verify_option,
     timeout_option,
 )
+from .schemas import LocalStorageConfig, S3StorageConfig, SSHStorageConfig
 from .unified import (
     analyze_storage,
     list_storage_contents,
@@ -48,13 +41,13 @@ from .unified import (
 
 app = typer.Typer(
     name="ds-tools",
-    help="CLI for unified storage operations (local, SSH, S3)",
-    add_completion=False,
+    help="Tools and integrations for dynamic UIs and complex workflows.",
+    no_args_is_help=True,
 )
 
 
 def version_callback(value: bool) -> None:
-    """Print version and exit."""
+    """Display version information."""
     if value:
         typer.echo(f"ds-tools {__version__}")
         raise typer.Exit()
@@ -64,27 +57,78 @@ def version_callback(value: bool) -> None:
 def main(
     version: Annotated[
         Optional[bool],
-        typer.Option(
-            "--version",
-            "-v",
-            callback=version_callback,
-            is_eager=True,
-            help="Show version and exit",
-        ),
+        typer.Option("--version", callback=version_callback, help="Show version."),
     ] = None,
 ) -> None:
-    """Main callback for global options."""
+    """
+    DS-Tools: Unified storage operations for local, SSH, and S3.
+
+    Storage type must be explicitly specified using --storage-type flag.
+    """
     pass
+
+
+def storage_type_option():
+    """Storage type option factory."""
+    return Annotated[
+        Literal["local", "ssh", "s3"],
+        typer.Option(
+            "--storage-type",
+            "-t",
+            help="Storage type: local, ssh, or s3",
+            case_sensitive=False,
+        ),
+    ]
+
+
+def _create_storage_config(
+    storage_type: Literal["local", "ssh", "s3"],
+    hostname: Optional[str] = None,
+    username: Optional[str] = None,
+    ssh_key: Optional[str] = None,
+    access_key_id: Optional[str] = None,
+    secret_access_key: Optional[str] = None,
+    session_token: Optional[str] = None,
+    region_name: Optional[str] = None,
+    endpoint_url: Optional[str] = None,
+    aws_profile: Optional[str] = None,
+):
+    """Create appropriate storage configuration based on storage type."""
+    if storage_type == "ssh":
+        if not all([hostname, username, ssh_key]):
+            raise ValueError(
+                "SSH storage requires --hostname, --username, and --ssh-key"
+            )
+
+        return SSHStorageConfig(
+            hostname=hostname,
+            username=username,
+            ssh_key_path=ssh_key,
+        )
+
+    elif storage_type == "s3":
+        return S3StorageConfig(
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            session_token=session_token,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_profile=aws_profile,
+        )
+
+    elif storage_type == "local":
+        return LocalStorageConfig()
+
+    else:
+        raise ValueError(
+            f"Invalid storage type: {storage_type}. Must be 'local', 'ssh', or 's3'"
+        )
 
 
 @app.command("analyze")
 def analyze_cmd(
-    path: Annotated[
-        str,
-        typer.Argument(
-            help="Storage path (local, ssh://user@host/path, or s3://bucket/prefix)"
-        ),
-    ],
+    path: Annotated[str, typer.Argument(help="Storage path to analyze")],
+    storage_type: storage_type_option(),
     # SSH options
     hostname: ssh_hostname_option() = None,
     username: ssh_username_option() = None,
@@ -102,12 +146,16 @@ def analyze_cmd(
     """
     Analyze storage to get item count and total size.
 
-    Supports local paths, SSH (ssh://user@host/path), and S3 (s3://bucket/prefix).
-    Storage type is auto-detected from path format.
+    Examples:
+        Local: ds-tools analyze /data/path --storage-type local
+        SSH: ds-tools analyze /remote/path --storage-type ssh --hostname server.com \
+             --username user --ssh-key ~/.ssh/id_rsa
+        S3: ds-tools analyze s3://bucket/prefix --storage-type s3 \
+            --aws-profile myprofile
     """
     try:
-        metrics = analyze_storage(
-            path=path,
+        config = _create_storage_config(
+            storage_type=storage_type,
             hostname=hostname,
             username=username,
             ssh_key=ssh_key,
@@ -117,6 +165,11 @@ def analyze_cmd(
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_profile=aws_profile,
+        )
+
+        metrics = analyze_storage(
+            path=path,
+            config=config,
             timeout=timeout,
         )
 
@@ -144,6 +197,7 @@ def analyze_cmd(
 @app.command("list")
 def list_cmd(
     path: Annotated[str, typer.Argument(help="Storage path to list")],
+    storage_type: storage_type_option(),
     content_type: content_type_option() = "subdirectories",
     # SSH options
     hostname: ssh_hostname_option() = None,
@@ -163,12 +217,15 @@ def list_cmd(
     """
     List storage contents (subdirectories/prefixes or files/objects).
 
-    Supports local paths, SSH (ssh://user@host/path), and S3 (s3://bucket/prefix).
+    Examples:
+        Local: ds-tools list /data/path --storage-type local
+        SSH: ds-tools list /remote/path --storage-type ssh --hostname server.com \
+             --username user --ssh-key ~/.ssh/id_rsa
+        S3: ds-tools list s3://bucket/prefix --storage-type s3 --aws-profile myprofile
     """
     try:
-        items = list_storage_contents(
-            path=path,
-            content_type=content_type,
+        config = _create_storage_config(
+            storage_type=storage_type,
             hostname=hostname,
             username=username,
             ssh_key=ssh_key,
@@ -178,8 +235,14 @@ def list_cmd(
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_profile=aws_profile,
-            timeout=timeout,
+        )
+
+        items = list_storage_contents(
+            path=path,
+            config=config,
+            content_type=content_type,
             max_items=max_items,
+            timeout=timeout,
         )
 
         if items:
@@ -197,11 +260,11 @@ def list_cmd(
 @app.command("verify-access")
 def verify_access_cmd(
     path: Annotated[str, typer.Argument(help="Storage path to verify access for")],
+    storage_type: storage_type_option(),
     operation: operation_option() = "read",
-    username: fs_username_option() = None,
     # SSH options
     hostname: ssh_hostname_option() = None,
-    ssh_username: ssh_username_verify_option() = None,
+    username: ssh_username_option() = None,
     ssh_key: ssh_key_option() = None,
     # S3 options
     access_key_id: aws_access_key_option() = None,
@@ -210,19 +273,27 @@ def verify_access_cmd(
     region_name: aws_region_option() = "us-east-1",
     endpoint_url: aws_endpoint_url_option() = None,
     aws_profile: aws_profile_option() = None,
+    # Filesystem options
+    fs_username: fs_username_option() = None,
+    # Common options
+    timeout: timeout_option() = 300,
 ) -> None:
     """
     Verify access to storage location.
 
-    Supports local paths, SSH (ssh://user@host/path), and S3 (s3://bucket/prefix).
+    Tests read, write, or list permissions for the specified path.
+    Examples:
+        Local: ds-tools verify-access /data/path --storage-type local --fs-username user
+        SSH: ds-tools verify-access /remote/path --storage-type ssh \
+             --hostname server.com --username user --ssh-key ~/.ssh/id_rsa
+        S3: ds-tools verify-access s3://bucket/prefix --storage-type s3 \
+            --aws-profile myprofile
     """
     try:
-        has_access = verify_storage_access(
-            path=path,
-            username=username,
-            operation=operation,
+        config = _create_storage_config(
+            storage_type=storage_type,
             hostname=hostname,
-            ssh_username=ssh_username,
+            username=username,
             ssh_key=ssh_key,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
@@ -232,10 +303,21 @@ def verify_access_cmd(
             aws_profile=aws_profile,
         )
 
+        has_access = verify_storage_access(
+            path=path,
+            config=config,
+            operation=operation,
+            timeout=timeout,
+            username=fs_username,  # For local filesystem
+        )
+
         if has_access:
-            typer.echo(f"✓ {operation.title()} access verified for: {path}")
+            typer.echo(f"✓ Access verified: {operation} permission granted for {path}")
         else:
-            typer.echo(f"✗ {operation.title()} access denied for: {path}")
+            typer.echo(
+                f"✗ Access denied: {operation} permission denied for {path}",
+                err=True
+            )
             raise typer.Exit(1)
 
     except Exception as e:
