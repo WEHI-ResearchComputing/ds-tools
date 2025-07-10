@@ -16,22 +16,6 @@ from typing import Annotated, Literal, Optional
 import typer
 
 from . import __version__
-from .cli_params import (
-    aws_access_key_option,
-    aws_endpoint_url_option,
-    aws_profile_option,
-    aws_region_option,
-    aws_secret_key_option,
-    aws_session_token_option,
-    content_type_option,
-    fs_username_option,
-    max_items_option,
-    operation_option,
-    ssh_hostname_option,
-    ssh_key_option,
-    ssh_username_option,
-    timeout_option,
-)
 from .schemas import (
     NFS4StorageConfig,
     NFSStorageConfig,
@@ -73,17 +57,15 @@ def main(
     pass
 
 
-def storage_type_option():
-    """Storage type option factory."""
-    return Annotated[
-        Literal["nfs", "nfs4", "ssh", "s3"],
-        typer.Option(
-            "--storage-type",
-            "-t",
-            help="Storage type: nfs, nfs4, ssh, or s3",
-            case_sensitive=False,
-        ),
-    ]
+StorageTypeOption = Annotated[
+    Literal["nfs", "nfs4", "ssh", "s3"],
+    typer.Option(
+        "--storage-type",
+        "-t",
+        help="Storage type: nfs, nfs4, ssh, or s3",
+        case_sensitive=False,
+    ),
+]
 
 
 def _create_storage_config(
@@ -105,6 +87,11 @@ def _create_storage_config(
             raise ValueError(
                 "SSH storage requires --hostname, --username, and --ssh-key"
             )
+
+        # Type checker needs explicit assertion after validation
+        assert hostname is not None
+        assert username is not None
+        assert ssh_key is not None
 
         return SSHStorageConfig(
             hostname=hostname,
@@ -138,24 +125,44 @@ def _create_storage_config(
 @app.command("analyze")
 def analyze_cmd(
     path: Annotated[str, typer.Argument(help="Storage path to analyze")],
-    storage_type: storage_type_option(),
+    storage_type: StorageTypeOption,
     # SSH options
-    hostname: ssh_hostname_option() = None,
-    username: ssh_username_option() = None,
-    ssh_key: ssh_key_option() = None,
+    hostname: Annotated[
+        Optional[str], typer.Option("--hostname", help="SSH hostname (for remote paths)")
+    ] = None,
+    username: Annotated[
+        Optional[str], typer.Option("--username", help="SSH username (for remote paths)")
+    ] = None,
+    ssh_key: Annotated[
+        Optional[str], typer.Option("--ssh-key", help="Path to SSH private key (for remote paths)")
+    ] = None,
     # S3 options
-    access_key_id: aws_access_key_option() = None,
-    secret_access_key: aws_secret_key_option() = None,
-    session_token: aws_session_token_option() = None,
-    region_name: aws_region_option() = "us-east-1",
-    endpoint_url: aws_endpoint_url_option() = None,
-    aws_profile: aws_profile_option() = None,
+    access_key_id: Annotated[
+        Optional[str], typer.Option("--access-key-id", help="AWS access key ID (for S3 paths)")
+    ] = None,
+    secret_access_key: Annotated[
+        Optional[str], typer.Option("--secret-access-key", help="AWS secret access key (for S3 paths)")
+    ] = None,
+    session_token: Annotated[
+        Optional[str], typer.Option("--session-token", help="AWS session token (for S3 paths)")
+    ] = None,
+    region_name: Annotated[
+        str, typer.Option("--region", help="AWS region name (for S3 paths)")
+    ] = "us-east-1",
+    endpoint_url: Annotated[
+        Optional[str], typer.Option("--endpoint-url", help="Custom S3 endpoint URL")
+    ] = None,
+    aws_profile: Annotated[
+        Optional[str], typer.Option("--aws-profile", help="AWS CLI profile name (for S3 paths)")
+    ] = None,
     # NFS options
     base_path: Annotated[
         Optional[str], typer.Option("--base-path", help="Base path for NFS storage")
     ] = None,
     # Common options
-    timeout: timeout_option() = 300,
+    timeout: Annotated[
+        int, typer.Option("--timeout", help="Command timeout in seconds")
+    ] = 300,
 ) -> None:
     """
     Analyze storage to get item count and total size.
@@ -213,26 +220,50 @@ def analyze_cmd(
 @app.command("list")
 def list_cmd(
     path: Annotated[str, typer.Argument(help="Storage path to list")],
-    storage_type: storage_type_option(),
-    content_type: content_type_option() = "subdirectories",
+    storage_type: StorageTypeOption,
+    content_type: Annotated[
+        str, typer.Option("--type", help="Content type to list: 'subdirectories' or 'files'")
+    ] = "subdirectories",
     # SSH options
-    hostname: ssh_hostname_option() = None,
-    username: ssh_username_option() = None,
-    ssh_key: ssh_key_option() = None,
+    hostname: Annotated[
+        Optional[str], typer.Option("--hostname", help="SSH hostname (for remote paths)")
+    ] = None,
+    username: Annotated[
+        Optional[str], typer.Option("--username", help="SSH username (for remote paths)")
+    ] = None,
+    ssh_key: Annotated[
+        Optional[str], typer.Option("--ssh-key", help="Path to SSH private key (for remote paths)")
+    ] = None,
     # S3 options
-    access_key_id: aws_access_key_option() = None,
-    secret_access_key: aws_secret_key_option() = None,
-    session_token: aws_session_token_option() = None,
-    region_name: aws_region_option() = "us-east-1",
-    endpoint_url: aws_endpoint_url_option() = None,
-    aws_profile: aws_profile_option() = None,
+    access_key_id: Annotated[
+        Optional[str], typer.Option("--access-key-id", help="AWS access key ID (for S3 paths)")
+    ] = None,
+    secret_access_key: Annotated[
+        Optional[str], typer.Option("--secret-access-key", help="AWS secret access key (for S3 paths)")
+    ] = None,
+    session_token: Annotated[
+        Optional[str], typer.Option("--session-token", help="AWS session token (for S3 paths)")
+    ] = None,
+    region_name: Annotated[
+        str, typer.Option("--region", help="AWS region name (for S3 paths)")
+    ] = "us-east-1",
+    endpoint_url: Annotated[
+        Optional[str], typer.Option("--endpoint-url", help="Custom S3 endpoint URL")
+    ] = None,
+    aws_profile: Annotated[
+        Optional[str], typer.Option("--aws-profile", help="AWS CLI profile name (for S3 paths)")
+    ] = None,
     # NFS options
     base_path: Annotated[
         Optional[str], typer.Option("--base-path", help="Base path for NFS storage")
     ] = None,
     # Common options
-    timeout: timeout_option() = 300,
-    max_items: max_items_option() = 1000,
+    timeout: Annotated[
+        int, typer.Option("--timeout", help="Command timeout in seconds")
+    ] = 300,
+    max_items: Annotated[
+        int, typer.Option("--max-items", help="Maximum number of items to return")
+    ] = 1000,
 ) -> None:
     """
     List storage contents (subdirectories/prefixes or files/objects).
@@ -282,27 +313,54 @@ def list_cmd(
 @app.command("verify-access")
 def verify_access_cmd(
     path: Annotated[str, typer.Argument(help="Storage path to verify access for")],
-    storage_type: storage_type_option(),
-    operation: operation_option() = "read",
+    storage_type: StorageTypeOption,
+    operation: Annotated[
+        str, typer.Option("--operation", help="Operation to test: 'read', 'write', or 'list'")
+    ] = "read",
     # SSH options
-    hostname: ssh_hostname_option() = None,
-    username: ssh_username_option() = None,
-    ssh_key: ssh_key_option() = None,
+    hostname: Annotated[
+        Optional[str], typer.Option("--hostname", help="SSH hostname (for remote paths)")
+    ] = None,
+    username: Annotated[
+        Optional[str], typer.Option("--username", help="SSH username (for remote paths)")
+    ] = None,
+    ssh_key: Annotated[
+        Optional[str], typer.Option("--ssh-key", help="Path to SSH private key (for remote paths)")
+    ] = None,
     # S3 options
-    access_key_id: aws_access_key_option() = None,
-    secret_access_key: aws_secret_key_option() = None,
-    session_token: aws_session_token_option() = None,
-    region_name: aws_region_option() = "us-east-1",
-    endpoint_url: aws_endpoint_url_option() = None,
-    aws_profile: aws_profile_option() = None,
+    access_key_id: Annotated[
+        Optional[str], typer.Option("--access-key-id", help="AWS access key ID (for S3 paths)")
+    ] = None,
+    secret_access_key: Annotated[
+        Optional[str], typer.Option("--secret-access-key", help="AWS secret access key (for S3 paths)")
+    ] = None,
+    session_token: Annotated[
+        Optional[str], typer.Option("--session-token", help="AWS session token (for S3 paths)")
+    ] = None,
+    region_name: Annotated[
+        str, typer.Option("--region", help="AWS region name (for S3 paths)")
+    ] = "us-east-1",
+    endpoint_url: Annotated[
+        Optional[str], typer.Option("--endpoint-url", help="Custom S3 endpoint URL")
+    ] = None,
+    aws_profile: Annotated[
+        Optional[str], typer.Option("--aws-profile", help="AWS CLI profile name (for S3 paths)")
+    ] = None,
     # Filesystem options
-    fs_username: fs_username_option() = None,
+    fs_username: Annotated[
+        Optional[str],
+        typer.Option(
+            "--fs-username", help="Username to check access for (filesystem only)"
+        ),
+    ] = None,
     # NFS options
     base_path: Annotated[
         Optional[str], typer.Option("--base-path", help="Base path for NFS storage")
     ] = None,
     # Common options
-    timeout: timeout_option() = 300,
+    timeout: Annotated[
+        int, typer.Option("--timeout", help="Command timeout in seconds")
+    ] = 300,
 ) -> None:
     """
     Verify access to storage location.

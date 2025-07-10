@@ -66,7 +66,7 @@ def analyze_storage(
                 access_key_id=config.access_key_id,
                 secret_access_key=config.secret_access_key,
                 session_token=config.session_token,
-                region_name=config.region_name,
+                region_name=config.region_name or "us-east-1",
                 endpoint_url=config.endpoint_url,
                 aws_profile=config.aws_profile,
             )
@@ -156,7 +156,7 @@ def list_storage_contents(
                 access_key_id=config.access_key_id,
                 secret_access_key=config.secret_access_key,
                 session_token=config.session_token,
-                region_name=config.region_name,
+                region_name=config.region_name or "us-east-1",
                 endpoint_url=config.endpoint_url,
                 aws_profile=config.aws_profile,
                 max_keys=max_items,
@@ -225,7 +225,7 @@ def verify_storage_access(
                 access_key_id=config.access_key_id,
                 secret_access_key=config.secret_access_key,
                 session_token=config.session_token,
-                region_name=config.region_name,
+                region_name=config.region_name or "us-east-1",
                 endpoint_url=config.endpoint_url,
                 aws_profile=config.aws_profile,
             )
