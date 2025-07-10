@@ -1,157 +1,103 @@
-"""Tests for directory metrics functionality."""
+"""Tests for unified storage analysis operations."""
 
-import subprocess
 from unittest.mock import Mock, patch
 
 import pytest
 
-from ds_tools.core.exceptions import CommandExecutionError
-from ds_tools.filesystem.operations import (
-    DirectoryMetrics,
-    LocalDirectoryAnalyzer,
-    RemoteDirectoryAnalyzer,
-    calculate_directory_metrics,
-)
+from ds_tools.core.exceptions import ValidationError
+from ds_tools.schemas import NFSStorageConfig, S3StorageConfig, SSHStorageConfig
+from ds_tools.unified.storage_operations import StorageMetrics, analyze_storage
 
 
-class TestDirectoryMetrics:
-    """Test DirectoryMetrics dataclass."""
+class TestStorageMetrics:
+    """Test StorageMetrics dataclass."""
 
-    def test_directory_metrics_creation(self):
-        """Test DirectoryMetrics creation and immutability."""
-        metrics = DirectoryMetrics(file_count=42, total_bytes=1048576)
+    def test_storage_metrics_creation(self):
+        """Test StorageMetrics creation and immutability."""
+        metrics = StorageMetrics(
+            item_count=42,
+            total_bytes=1048576,
+            storage_type="nfs",
+            location="/test/path",
+        )
 
-        assert metrics.file_count == 42
+        assert metrics.item_count == 42
         assert metrics.total_bytes == 1048576
+        assert metrics.storage_type == "nfs"
+        assert metrics.location == "/test/path"
 
-        # Test immutability (frozen dataclass)
         with pytest.raises(AttributeError):
-            metrics.file_count = 100
+            metrics.item_count = 100
 
 
-class TestLocalDirectoryAnalyzer:
-    """Test local directory analysis functionality."""
+class TestAnalyzeStorage:
+    """Test unified storage analysis functionality."""
 
-    def test_execute_command_success(self):
-        """Test successful command execution."""
-        analyzer = LocalDirectoryAnalyzer()
+    @patch("ds_tools.unified.storage_operations.analyze_local_directory")
+    def test_analyze_nfs_storage(self, mock_analyze_local):
+        """Test NFS storage analysis."""
+        mock_metrics = Mock()
+        mock_metrics.file_count = 10
+        mock_metrics.total_bytes = 2048
+        mock_analyze_local.return_value = mock_metrics
 
-        with patch("subprocess.run") as mock_run:
-            mock_result = Mock()
-            mock_result.returncode = 0
-            mock_result.stdout = "10,1024"
-            mock_result.stderr = ""
-            mock_run.return_value = mock_result
+        config = NFSStorageConfig(base_path="/mnt/nfs")
+        result = analyze_storage("/data/test", config, timeout=60)
 
-            result = analyzer.execute_command("/test/path", timeout=30)
+        assert isinstance(result, StorageMetrics)
+        assert result.item_count == 10
+        assert result.total_bytes == 2048
+        assert result.storage_type == "nfs"
+        assert result.location == "/data/test"
+        mock_analyze_local.assert_called_once_with("/data/test", 60)
 
-            assert result.returncode == 0
-            assert result.stdout == "10,1024"
+    @patch("ds_tools.unified.storage_operations.analyze_remote_directory")
+    def test_analyze_ssh_storage(self, mock_analyze_remote):
+        """Test SSH storage analysis."""
+        mock_metrics = Mock()
+        mock_metrics.file_count = 20
+        mock_metrics.total_bytes = 4096
+        mock_analyze_remote.return_value = mock_metrics
 
-            # Verify the command was constructed correctly
-            call_args = mock_run.call_args[0][0]
-            assert "find '/test/path'" in call_args
-            assert "awk" in call_args
+        config = SSHStorageConfig(
+            hostname="test.host", username="user", ssh_key_path="/key"
+        )
+        result = analyze_storage("/remote/path", config)
 
-
-class TestRemoteDirectoryAnalyzer:
-    """Test remote directory analysis functionality."""
-
-    def test_execute_command_success(self, mock_ssh_key):
-        """Test successful remote command execution."""
-        analyzer = RemoteDirectoryAnalyzer(
-            hostname="test.host", username="testuser", ssh_key=mock_ssh_key
+        assert result.item_count == 20
+        assert result.total_bytes == 4096
+        assert result.storage_type == "ssh"
+        mock_analyze_remote.assert_called_once_with(
+            hostname="test.host",
+            username="user",
+            ssh_key="/key",
+            path="/remote/path",
+            timeout=300,
         )
 
-        with patch("subprocess.run") as mock_run:
-            mock_result = Mock()
-            mock_result.returncode = 0
-            mock_result.stdout = "20,2048"
-            mock_result.stderr = ""
-            mock_run.return_value = mock_result
+    @patch("ds_tools.unified.storage_operations.analyze_prefix")
+    def test_analyze_s3_storage(self, mock_analyze_prefix):
+        """Test S3 storage analysis."""
+        mock_metrics = Mock()
+        mock_metrics.object_count = 15
+        mock_metrics.total_bytes = 8192
+        mock_analyze_prefix.return_value = mock_metrics
 
-            result = analyzer.execute_command("/remote/path", timeout=30)
+        config = S3StorageConfig(region_name="us-west-2")
+        result = analyze_storage("s3://bucket/prefix", config)
 
-            assert result.returncode == 0
-            assert result.stdout == "20,2048"
+        assert result.item_count == 15
+        assert result.total_bytes == 8192
+        assert result.storage_type == "s3"
+        mock_analyze_prefix.assert_called_once()
 
-            # Verify SSH command construction
-            call_args = mock_run.call_args[0][0]
-            assert call_args[0] == "ssh"
-            assert "-i" in call_args
-            assert mock_ssh_key in call_args
-            assert "testuser@test.host" in call_args
+    @patch("ds_tools.unified.storage_operations.analyze_local_directory")
+    def test_analyze_storage_error_handling(self, mock_analyze_local):
+        """Test error handling in storage analysis."""
+        mock_analyze_local.side_effect = Exception("Analysis failed")
 
+        config = NFSStorageConfig()
+        with pytest.raises(ValidationError) as exc_info:
+            analyze_storage("/bad/path", config)
 
-class TestCalculateDirectoryMetrics:
-    """Test the calculate_directory_metrics function."""
-
-    def test_calculate_metrics_success(self):
-        """Test successful metrics calculation."""
-        mock_analyzer = Mock()
-        mock_result = Mock()
-        mock_result.returncode = 0
-        mock_result.stdout = "42,1048576"
-        mock_result.stderr = ""
-        mock_analyzer.execute_command.return_value = mock_result
-
-        metrics = calculate_directory_metrics(mock_analyzer, "/test/path")
-
-        assert isinstance(metrics, DirectoryMetrics)
-        assert metrics.file_count == 42
-        assert metrics.total_bytes == 1048576
-        mock_analyzer.execute_command.assert_called_once_with("/test/path", 300)
-
-    def test_calculate_metrics_command_failure(self):
-        """Test handling of command failure."""
-        mock_analyzer = Mock()
-        mock_result = Mock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "Permission denied"
-        mock_analyzer.execute_command.return_value = mock_result
-
-        with pytest.raises(CommandExecutionError) as exc_info:
-            calculate_directory_metrics(mock_analyzer, "/test/path")
-
-        assert "Command failed: Permission denied" in str(exc_info.value)
-
-    def test_calculate_metrics_invalid_output(self):
-        """Test handling of invalid command output."""
-        mock_analyzer = Mock()
-        mock_result = Mock()
-        mock_result.returncode = 0
-        mock_result.stdout = "invalid output"
-        mock_result.stderr = ""
-        mock_analyzer.execute_command.return_value = mock_result
-
-        with pytest.raises(CommandExecutionError) as exc_info:
-            calculate_directory_metrics(mock_analyzer, "/test/path")
-
-        assert "Unexpected output format" in str(exc_info.value)
-
-    def test_calculate_metrics_timeout(self):
-        """Test handling of command timeout."""
-        mock_analyzer = Mock()
-        mock_analyzer.execute_command.side_effect = subprocess.TimeoutExpired(
-            cmd="test", timeout=30
-        )
-
-        with pytest.raises(CommandExecutionError) as exc_info:
-            calculate_directory_metrics(mock_analyzer, "/test/path", timeout=30)
-
-        assert "Command timed out after 30 seconds" in str(exc_info.value)
-
-    def test_calculate_metrics_parse_error(self):
-        """Test handling of output parsing errors."""
-        mock_analyzer = Mock()
-        mock_result = Mock()
-        mock_result.returncode = 0
-        mock_result.stdout = "abc,def"  # Non-numeric values
-        mock_result.stderr = ""
-        mock_analyzer.execute_command.return_value = mock_result
-
-        with pytest.raises(CommandExecutionError) as exc_info:
-            calculate_directory_metrics(mock_analyzer, "/test/path")
-
-        assert "Failed to parse command output" in str(exc_info.value)
+        assert "Failed to analyze storage" in str(exc_info.value)

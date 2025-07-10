@@ -5,45 +5,11 @@ import pytest
 from moto import mock_aws
 
 from ds_tools.core.exceptions import ValidationError
-from ds_tools.objectstorage import (
-    PrefixMetrics,
-    S3ClientConfig,
-    S3ClientManager,
+from ds_tools.objectstorage.s3_operations import (
     analyze_prefix,
     list_objects_by_prefix,
     verify_s3_access,
 )
-from ds_tools.objectstorage.s3_operations import (
-    analyze_s3_prefix,
-    list_s3_objects,
-    list_s3_prefixes,
-)
-
-
-class TestS3ClientManager:
-    """Test S3 client management."""
-
-    def test_parse_s3_path_valid(self):
-        """Test parsing valid S3 paths."""
-        bucket, prefix = S3ClientManager.parse_s3_path("s3://mybucket/myprefix")
-        assert bucket == "mybucket"
-        assert prefix == "myprefix"
-
-        bucket, prefix = S3ClientManager.parse_s3_path("s3://mybucket/folder/subfolder")
-        assert bucket == "mybucket"
-        assert prefix == "folder/subfolder"
-
-        bucket, prefix = S3ClientManager.parse_s3_path("s3://mybucket")
-        assert bucket == "mybucket"
-        assert prefix == ""
-
-    def test_parse_s3_path_invalid(self):
-        """Test parsing invalid S3 paths."""
-        with pytest.raises(ValidationError):
-            S3ClientManager.parse_s3_path("http://mybucket/myprefix")
-
-        with pytest.raises(ValidationError):
-            S3ClientManager.parse_s3_path("s3://")
 
 
 @mock_aws
@@ -52,14 +18,6 @@ class TestS3PrefixAnalyzer:
 
     def setup_method(self, method):
         """Set up test environment."""
-        self.config = S3ClientConfig(
-            access_key_id="test_key",
-            secret_access_key="test_secret",
-            region_name="us-east-1",
-            session_token=None,
-            endpoint_url=None,
-            aws_profile=None,
-        )
 
         # Create mock S3 bucket and objects
         self.s3_client = boto3.client(
@@ -76,29 +34,26 @@ class TestS3PrefixAnalyzer:
         )
         self.s3_client.put_object(
             Bucket="test-bucket", Key="data/file2.txt", Body=b"content2content2"
-        )  # 16 bytes
+        )
         self.s3_client.put_object(
             Bucket="test-bucket", Key="data/subdir/file3.txt", Body=b"content3"
         )
 
     def test_analyze_prefix_success(self):
         """Test successful prefix analysis."""
-        metrics = analyze_s3_prefix(
+        metrics = analyze_prefix(
             "s3://test-bucket/data",
             access_key_id="test_key",
             secret_access_key="test_secret",
             region_name="us-east-1",
         )
 
-        assert isinstance(metrics, PrefixMetrics)
-        assert metrics.bucket == "test-bucket"
-        assert metrics.prefix == "data"
         assert metrics.object_count == 3
-        assert metrics.total_bytes == 32  # 8 + 16 + 8 bytes
+        assert metrics.total_bytes == 32
 
     def test_analyze_prefix_empty(self):
         """Test analysis of empty prefix."""
-        metrics = analyze_s3_prefix(
+        metrics = analyze_prefix(
             "s3://test-bucket/nonexistent",
             access_key_id="test_key",
             secret_access_key="test_secret",
@@ -108,8 +63,8 @@ class TestS3PrefixAnalyzer:
         assert metrics.object_count == 0
         assert metrics.total_bytes == 0
 
-    def test_analyze_prefix_convenience_function(self):
-        """Test the convenience function."""
+    def test_analyze_prefix_with_credentials(self):
+        """Test prefix analysis with explicit credentials."""
         metrics = analyze_prefix(
             "s3://test-bucket/data",
             access_key_id="test_key",
@@ -127,14 +82,6 @@ class TestS3PrefixLister:
 
     def setup_method(self, method):
         """Set up test environment."""
-        self.config = S3ClientConfig(
-            access_key_id="test_key",
-            secret_access_key="test_secret",
-            region_name="us-east-1",
-            session_token=None,
-            endpoint_url=None,
-            aws_profile=None,
-        )
 
         # Create mock S3 bucket and objects
         self.s3_client = boto3.client(
@@ -161,10 +108,11 @@ class TestS3PrefixLister:
 
     def test_list_common_prefixes(self):
         """Test listing common prefixes."""
-        prefixes = list_s3_prefixes(
+        prefixes = list_objects_by_prefix(
             "s3://test-bucket/data/",
-            access_key_id="test-key",
-            secret_access_key="test-secret",
+            list_type="prefixes",
+            access_key_id="test_key",
+            secret_access_key="test_secret",
             region_name="us-east-1",
         )
 
@@ -177,10 +125,11 @@ class TestS3PrefixLister:
 
     def test_list_objects(self):
         """Test listing objects."""
-        objects = list_s3_objects(
+        objects = list_objects_by_prefix(
             "s3://test-bucket/data/",
-            access_key_id="test-key",
-            secret_access_key="test-secret",
+            list_type="objects",
+            access_key_id="test_key",
+            secret_access_key="test_secret",
             region_name="us-east-1",
             max_keys=10,
         )
@@ -189,8 +138,8 @@ class TestS3PrefixLister:
         assert "s3://test-bucket/data/file4.txt" in objects
         assert "s3://test-bucket/data/2023/file1.txt" in objects
 
-    def test_list_objects_by_prefix_convenience(self):
-        """Test the convenience function."""
+    def test_list_objects_by_prefix_validation(self):
+        """Test prefix listing returns expected format."""
         prefixes = list_objects_by_prefix(
             "s3://test-bucket/data/",
             list_type="prefixes",
@@ -209,14 +158,6 @@ class TestS3AccessVerifier:
 
     def setup_method(self, method):
         """Set up test environment."""
-        self.config = S3ClientConfig(
-            access_key_id="test_key",
-            secret_access_key="test_secret",
-            region_name="us-east-1",
-            session_token=None,
-            endpoint_url=None,
-            aws_profile=None,
-        )
 
         # Create mock S3 bucket and objects
         self.s3_client = boto3.client(
@@ -232,7 +173,6 @@ class TestS3AccessVerifier:
 
     def test_verify_bucket_access(self):
         """Test bucket access verification."""
-        # Test basic list access on bucket root
         result = verify_s3_access(
             "s3://test-bucket/",
             operation="list",
@@ -273,13 +213,10 @@ class TestS3AccessVerifier:
             secret_access_key="test_secret",
             region_name="us-east-1",
         )
-        # Write test creates and aborts multipart upload
         assert result is True
 
     def test_get_accessible_operations(self):
-        """Test getting all accessible operations."""
-        # Test each operation individually since we don't have
-        # get_accessible_operations function
+        """Test checking multiple operations for access."""
         operations = []
 
         for op in ["list", "read", "write"]:
@@ -300,8 +237,8 @@ class TestS3AccessVerifier:
         assert "read" in operations
         assert "write" in operations
 
-    def test_verify_s3_access_convenience(self):
-        """Test the convenience function."""
+    def test_verify_s3_access_list_operation(self):
+        """Test S3 access verification for list operation."""
         result = verify_s3_access(
             "s3://test-bucket/data",
             operation="list",
@@ -311,7 +248,7 @@ class TestS3AccessVerifier:
         )
         assert result is True
 
-    def test_invalid_operation(self):
+    def test_verify_s3_access_invalid_operation(self):
         """Test invalid operation parameter."""
         with pytest.raises(ValidationError, match="Invalid operation"):
             verify_s3_access(
@@ -323,20 +260,3 @@ class TestS3AccessVerifier:
             )
 
 
-class TestPrefixMetrics:
-    """Test PrefixMetrics dataclass."""
-
-    def test_prefix_metrics_creation(self):
-        """Test PrefixMetrics creation and immutability."""
-        metrics = PrefixMetrics(
-            object_count=42, total_bytes=1048576, bucket="mybucket", prefix="myprefix"
-        )
-
-        assert metrics.object_count == 42
-        assert metrics.total_bytes == 1048576
-        assert metrics.bucket == "mybucket"
-        assert metrics.prefix == "myprefix"
-
-        # Test immutability (frozen dataclass)
-        with pytest.raises((AttributeError, TypeError)):
-            metrics.object_count = 100  # type: ignore

@@ -88,7 +88,6 @@ def _create_storage_config(
                 "SSH storage requires --hostname, --username, and --ssh-key"
             )
 
-        # Type checker needs explicit assertion after validation
         assert hostname is not None
         assert username is not None
         assert ssh_key is not None

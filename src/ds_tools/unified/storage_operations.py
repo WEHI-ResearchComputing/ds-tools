@@ -274,7 +274,6 @@ def verify_storage_access(
                 elif isinstance(config, NFS4StorageConfig):
                     return verify_directory_access(FilesystemType.nfs4, path, username)
                 else:
-                    # Fallback to NFS for any other case
                     return verify_directory_access(FilesystemType.nfs, path, username)
             elif operation == "write":
                 raise ValidationError(
